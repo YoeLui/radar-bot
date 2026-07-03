@@ -18,9 +18,10 @@ jobs:
 
       - name: Instalar Dependencias de Datos
         run: |
-          pip install pandas requests huggingface_hub
+          pip install pandas requests huggingface_hub geopy
 
       - name: Ejecutar Robot Extractor
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scraper.py
+        
