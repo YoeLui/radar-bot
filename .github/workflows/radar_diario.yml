@@ -1,0 +1,27 @@
+name: Actualizacion Diaria de Promociones
+on:
+  schedule:
+    - cron: '0 5 * * *' # Se ejecuta de forma exacta todos los días a las 12:00 AM hora Perú (05:00 UTC)
+  workflow_dispatch: # Añade el botón manual para cuando quieras actualizarlo tú mismo
+
+jobs:
+  build-and-refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar Repositorio
+        uses: actions/checkout@v3
+
+      - name: Configurar Python Oficial
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Instalar Dependencias de Datos
+        run: |
+          pip install pandas requests huggingface_hub
+
+      - name: Ejecutar Robot Extractor
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }} # Llama a la llave de seguridad que configuraremos en el siguiente paso
+        run: python scraper.py
+        
