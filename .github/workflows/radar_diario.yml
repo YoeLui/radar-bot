@@ -1,8 +1,8 @@
 name: Actualizacion Diaria de Promociones
 on:
   schedule:
-    - cron: '0 5 * * *' # Se ejecuta de forma exacta todos los días a las 12:00 AM hora Perú (05:00 UTC)
-  workflow_dispatch: # Añade el botón manual para cuando quieras actualizarlo tú mismo
+    - cron: '0 5 * * *'
+  workflow_dispatch:
 
 jobs:
   build-and-refresh:
@@ -22,6 +22,5 @@ jobs:
 
       - name: Ejecutar Robot Extractor
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }} # Llama a la llave de seguridad que configuraremos en el siguiente paso
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scraper.py
-        
