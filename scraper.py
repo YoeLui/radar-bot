@@ -4,7 +4,7 @@ import time
 import os
 from huggingface_hub import HfApi
 
-# Base maestra oficial actualizada con tus capturas del 50%, Plin y Viajes
+# Base maestra oficial de ofertas
 DIARIO_CATALOGO = [
     {"Cadena": "Barrio", "Tarjeta": "Interbank", "Tipo": "Cuenta Sueldo", "Rango": "Todas", "Descuento": "🔥 50% de descuento en toda la carta."},
     {"Cadena": "Popular", "Tarjeta": "Interbank", "Tipo": "Cuenta Sueldo", "Rango": "Todas", "Descuento": "🔥 50% de descuento en toda la carta."},
@@ -24,7 +24,6 @@ DIARIO_CATALOGO = [
 ]
 
 def obtener_coordenadas(marca):
-    # Diccionario de coordenadas fijas de alta precisión para Lima para evitar bloqueos
     coordenadas = {
         "Barrio": (-12.0942, -77.0224), "Popular": (-12.1224, -77.0298), 
         "Embarcadero 41": (-12.1542, -76.9424), "La Cuadra de Salvador": (-12.1012, -77.0291),
@@ -35,7 +34,6 @@ def obtener_coordenadas(marca):
     }
     return coordenadas.get(marca, (-12.16542, -76.93351))
 
-# Generar filas procesadas con geolocalización activa
 registros = []
 for item in DIARIO_CATALOGO:
     lat, lon = obtener_coordenadas(item["Cadena"])
@@ -46,18 +44,24 @@ for item in DIARIO_CATALOGO:
 
 df = pd.DataFrame(registros)
 df.to_csv("promos.csv", index=False)
-print("✅ Archivo promos.csv generado exitosamente.")
+print("✅ Archivo promos.csv generado exitosamente en memoria local.")
 
-# Subida automatizada a Hugging Face usando tu Token de seguridad
 token = os.getenv("HF_TOKEN")
-if token:
+if not token:
+    print("❌ ERROR CRÍTICO: El token HF_TOKEN está vacío. Revisa la caja fuerte de Secrets en GitHub.")
+    exit(1)
+
+try:
     api = HfApi()
     api.upload_file(
         path_or_fileobj="promos.csv",
         path_in_repo="promos.csv",
-        repo_id="YoelLui/radar-vmt",
+        repo_id="YoeLui/radar-vmt",  
         repo_type="space",
         token=token
     )
-    print("🚀 Archivo sincronizado en producción de Hugging Face.")
+    print("🚀 ¡SINCRO COMPLETA! El archivo ya está en producción en Hugging Face.")
+except Exception as error_detalle:
+    print(f"❌ ALERTA DEL MOTOR: Falló la subida por el siguiente motivo: {error_detalle}")
+    exit(1)
     
