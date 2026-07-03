@@ -18,7 +18,7 @@ jobs:
 
       - name: Instalar Dependencias de Datos
         run: |
-          pip install pandas requests huggingface_hub geopy
+          pip install pandas requests huggingface_hub geopy beautifulsoup4
 
       - name: Ejecutar Robot Extractor
         env:
