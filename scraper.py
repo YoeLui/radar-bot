@@ -62,13 +62,20 @@ def cargar_memorias_historicas():
         ruta_json = hf_hub_download(repo_id=repo, filename="cache_coordenadas.json", repo_type="space", token=token_hf)
         with open(ruta_json, "r") as f: cache_coords = json.load(f)
     except Exception:
+        # DICCIONARIO DE EMERGENCIA: Formato Multi-Sucursal
         cache_coords = {
-            "Tottus": [-12.16542, -76.93351], "Sodimac": [-12.15900, -76.93500],
-            "Falabella": [-12.15550, -76.93850], "Tambo": [-12.16220, -76.93600],
-            "Metro": [-12.16400, -76.93850], "KFC": [-12.15550, -76.93900],
-            "Papa Johns": [-12.15200, -76.94100], "Bembos": [-12.15570, -76.93830],
-            "Cineplanet": [-12.15590, -76.93800], "Chili's": [-12.12240, -76.92720],
-            "Pardos Chicken": [-12.15580, -76.93810], "Starbucks": [-12.12100, -77.03000]
+            "Tottus": [[-12.16542, -76.93351], [-11.86720, -77.07540], [-12.20330, -76.93980], [-12.11200, -77.02700], [-12.07600, -77.08200]],
+            "Sodimac": [[-12.15900, -76.93500], [-11.86900, -77.07400], [-12.08300, -77.01200], [-12.00700, -77.05800]],
+            "Falabella": [[-12.15550, -76.93850], [-11.99300, -77.06200], [-12.10300, -77.02000], [-12.12200, -77.03000]],
+            "Tambo": [[-12.16220, -76.93600], [-11.86550, -77.07200], [-12.20500, -76.94100], [-12.04600, -77.04200], [-12.11800, -77.02900]],
+            "Metro": [[-12.16400, -76.93850], [-11.87000, -77.07100], [-12.17600, -77.01400], [-12.00800, -77.05900]],
+            "KFC": [[-12.15550, -76.93900], [-11.86800, -77.07600], [-12.20600, -76.93800], [-12.12100, -77.02800]],
+            "Papa Johns": [[-12.15200, -76.94100], [-11.99500, -77.06100], [-12.12500, -76.99900]],
+            "Bembos": [[-12.15570, -76.93830], [-11.86850, -77.07650], [-12.12150, -77.02850], [-12.00650, -77.05850]],
+            "Cineplanet": [[-12.15590, -76.93800], [-12.20450, -76.93900], [-11.99400, -77.06000], [-12.03000, -77.02500]],
+            "Chili's": [[-12.12240, -76.92720], [-11.99450, -77.06150], [-12.10350, -77.02050]],
+            "Pardos Chicken": [[-12.15580, -76.93810], [-11.86950, -77.07350], [-12.12000, -77.02950], [-12.04500, -77.04100]],
+            "Starbucks": [[-12.12100, -77.03000], [-11.99550, -77.06050], [-12.09500, -77.02500]]
         }
     try:
         ruta_csv = hf_hub_download(repo_id=repo, filename="promos.csv", repo_type="space", token=token_hf)
@@ -183,7 +190,7 @@ def procesar_banco_paralelo(banco, url, cache_coords, df_hist):
                             "Cadena": nombre, "Tarjeta": banco, "Tipo": tipo_p,
                             "Rango": "Platinum/Oro", "Descuento": f"🔥 {texto[:120]}...",
                             "URL_Promo": url_promo,
-                            "Actualizado": fecha_actual_str # Inyección de fecha individual por promoción
+                            "Actualizado": fecha_actual_str
                         })
                         promos_conteo += 1
                         
@@ -216,7 +223,6 @@ def normalizar_y_fusionar_historico(df_nuevo, df_hist):
     if df_hist.empty:
         return df_hist_filtrado
 
-    # CORRECCIÓN: Validación del TTL de 7 días calculado celda por celda (Punto 2 de ChatGPT)
     ahora = datetime.now()
     limite_caducidad = ahora - timedelta(days=CONFIG_GLOBAL["HISTORIAL_TTL_DIAS"])
     
@@ -227,15 +233,12 @@ def normalizar_y_fusionar_historico(df_nuevo, df_hist):
             df_hist_banco = df_hist[df_hist["Tarjeta"] == banco].copy()
             
             if not df_hist_banco.empty:
-                # Filtrado inteligente celda por celda: elimina filas antiguas de forma individual, no todo el bloque
                 if "Actualizado" in df_hist_banco.columns:
                     df_hist_banco["Actualizado_DT"] = pd.to_datetime(df_hist_banco["Actualizado"], errors="coerce")
-                    # Conservamos únicamente las filas individuales que no han vencido
                     df_hist_banco = df_hist_banco[df_hist_banco["Actualizado_DT"] >= limite_caducidad].copy()
                     df_hist_banco = df_hist_banco.drop(columns=["Actualizado_DT"])
                 
                 if df_hist_banco.empty:
-                    logging.warning(f"🕒 [TTL Expirado Fila] El historial de {banco} caducó individualmente por completo.")
                     continue
                 
                 prefijo = "🕒 [Histórico Red] " if status_estructural == "FALLO_RED" else "🕒 [Histórico Bloqueo] " if status_estructural == "BLOQUEO_SEGURIDAD" else "🕒 [Histórico Rediseño] "
@@ -252,7 +255,7 @@ def normalizar_y_fusionar_historico(df_nuevo, df_hist):
     return df_hist_filtrado.drop_duplicates(subset=["Cadena", "Tarjeta", "Tipo", "Descuento"])
 
 # ==========================================
-# 5. MÓDULOS CARTOGRÁFICOS Y VALIDACIÓN PRE-SAVE
+# 5. MÓDULOS CARTOGRÁFICOS MULTI-SUCURSAL Y VALIDACIÓN
 # ==========================================
 def procesar_geolocalizacion_limpia(df_matriz, cache_coords):
     registros_finales = []
@@ -260,19 +263,29 @@ def procesar_geolocalizacion_limpia(df_matriz, cache_coords):
     
     for _, row in df_matriz.iterrows():
         marca = row["Cadena"]
-        lat, lon = cache_coords.get(marca, [None, None])
-        if lat is None or lon is None:
-            if marca != "Oferta Desconocida": marcas_pendientes.add(marca)
+        puntos = cache_coords.get(marca, [])
+        
+        # ACTIALIZACIÓN v8.6: Motor Híbrido de Múltiples Sucursales Metropolitanas
+        if puntos and isinstance(puntos[0], list):
+            # Recorre todas las sucursales y clona la oferta en cada punto geográfico
+            for punto in puntos:
+                r = row.copy()
+                r["lat"], r["lon"] = punto[0], punto[1]
+                registros_finales.append(r)
+        elif puntos and len(puntos) == 2 and not isinstance(puntos[0], list):
+            # Compatibilidad con formato antiguo de un solo punto
+            r = row.copy()
+            r["lat"], r["lon"] = puntos[0], puntos[1]
+            registros_finales.append(r)
+        else:
+            if marca != "Oferta Desconocida":
+                marcas_pendientes.add(marca)
             continue
-        r = row.copy()
-        r["lat"], r["lon"] = lat, lon
-        registros_finales.append(r)
         
     return pd.DataFrame(registros_finales), list(marcas_pendientes)
 
 def validar_dataframe_final(df):
     if df.empty:
-        logging.warning("⚠️ Alerta de Calidad: El DataFrame final quedó legítimamente vacío por caducidad estricta.")
         return True
         
     columnas_requeridas = ["Cadena", "Tarjeta", "Tipo", "Rango", "Descuento", "URL_Promo", "lat", "lon", "Actualizado"]
@@ -329,7 +342,7 @@ def registrar_analiticas_y_pendientes(pendientes_lista):
 # ==========================================
 if __name__ == "__main__":
     tiempo_inicio = time.perf_counter()
-    logging.info("🚀 Encendiendo Orquestador Concurrente Metropolitano v8.5.1 [Cierre Técnico Base]...")
+    logging.info("🚀 Encendiendo Orquestador Concurrente Metropolitano v8.6 [Multisucursal]...")
     
     memoria_mapas, df_historico_previo = cargar_memorias_historicas()
     promos_acumuladas = []
@@ -367,7 +380,7 @@ if __name__ == "__main__":
                 if os.path.exists(archivo_local):
                     try:
                         api_hf.upload_file(path_or_fileobj=archivo_local, path_in_repo=archivo_local, repo_id=repo_target, repo_type="space", token=token_hf)
-                        logging.info(f"   📊 Sincronizado correctamente en tu Space: {archivo_local}")
+                        logging.info(f"   📊 Sincronizado correctamente: {archivo_local}")
                     except Exception as error_subida:
                         logging.error(f"   ❌ Fallo al subir {archivo_local}: {error_subida}")
     else:
@@ -375,13 +388,12 @@ if __name__ == "__main__":
         
     duracion_total = time.perf_counter() - tiempo_inicio
     
-    # Despliegue del Tablero de Control Uniforme
     logging.info("📋 ==============================================")
-    logging.info("📊 TABLERO DE CONTROL OPERATIVO RADAR v8.5.1")
+    logging.info("📊 TABLERO DE CONTROL OPERATIVO RADAR v8.6")
     logging.info("==================================================")
     for bk, d in dashboard_log.items():
         logging.info(f"🔹 {bk.ljust(12)}: {d['Estado'].ljust(26)} · Vía: {d['Metodo'].ljust(16)} · Conteo: {d['Promos']} promos.")
     logging.info("==================================================")
     logging.info(f"⏱️ Tiempo total de procesamiento asíncrono: {duracion_total:.2f} s")
     logging.info("==================================================")
-        
+                    
