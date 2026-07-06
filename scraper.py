@@ -6,9 +6,9 @@ import os
 import re
 import random
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 from huggingface_hub import HfApi, hf_hub_download
@@ -22,17 +22,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # ==========================================
 CONFIG_GLOBAL = {
     "REPO_SPACE": "YoeLui/radar-vmt",
+    "HISTORIAL_TTL_DIAS": 7, 
     "URLS_BANCOS": {
-        "Interbank": "https://interbank.pe/promociones", # <--- URL cambiada según la sugerencia de ChatGPT
+        "Interbank": "https://interbank.pe/promociones-catalogo/todo/tarjeta-de-credito",
         "BCP": "https://www.beneficiosbcp.com/",
         "CMR": "https://www.bancofalabella.pe/promociones",
-        "Efectibank": "https://www.efectiva.com.pe/promociones-y-campanas/" # URL real y segura de Financiera Efectiva
+        "Efectiva": "https://www.efectiva.com.pe/promociones-y-campanas/"
     },
     "SELECTORES": {
-        "Interbank": [".promo-card", ".promotion-card", "div[class*='promo']", "div[class*='oferta']"],
-        "BCP": [".benefit-card", ".offer-card", "div[class*='beneficio']", "article"],
-        "CMR": [".promotion-item", ".card-promo", "div[class*='oferta']", "section"],
-        "Efectibank": ["div[class*='promo']", "div[class*='campana']", "section", "article"]
+        "Interbank": [".promo-card", ".promotion-card", "div[class*='promo']"],
+        "BCP": [".benefit-card", ".offer-card", "article"],
+        "CMR": [".promotion-item", ".card-promo", "section"],
+        "Efectiva": ["div[class*='promo']", "div[class*='campana']", "section", "article"]
     },
     "PALABRAS_BASURA": [
         "extracash", "fondos mutuos", "solicita tu", "estado de cuenta", 
@@ -41,9 +42,9 @@ CONFIG_GLOBAL = {
     "STABLE_USER_AGENT": "Mozilla/5.0 (Linux; Android 10; K; WebView) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
 }
 
-# Expresiones regulares pre-compiladas para optimizar velocidad por hilos
 RE_GANCHO_AHORRO = re.compile(r"(\d+%\s*de\s*descuento|2x1|ahorro|exclusivo|S/\s*\d+|cashback|beneficio)", re.I)
 RE_FALSOS_TITULOS = re.compile(r"(buscar|carrito|legales|términos)", re.I)
+RE_MUROS_BLOQUEO = re.compile(r"(cloudflare|captcha|verify you are human|sucursal virtual|acceso denegado|robot|security check)", re.I)
 
 api_hf = HfApi()
 token_hf = os.getenv("HF_TOKEN")
@@ -60,8 +61,7 @@ def cargar_memorias_historicas():
     try:
         ruta_json = hf_hub_download(repo_id=repo, filename="cache_coordenadas.json", repo_type="space", token=token_hf)
         with open(ruta_json, "r") as f: cache_coords = json.load(f)
-    except Exception as error_hf:
-        logging.warning(f"ℹ️ Cargando caché de contingencia por ausencia o verificación de archivo: {error_hf}")
+    except Exception:
         cache_coords = {
             "Tottus": [-12.16542, -76.93351], "Sodimac": [-12.15900, -76.93500],
             "Falabella": [-12.15550, -76.93850], "Tambo": [-12.16220, -76.93600],
@@ -81,29 +81,37 @@ def cargar_memorias_historicas():
     return cache_coords, df_hist
 
 # ==========================================
-# 3. MÓDULO 2: HILOS TRABAJADORES THREAD-SAFE (POOL DE RETRY NATIVO)
+# 3. MÓDULO 2: HILOS TRABAJADORES (CHECK DE CONTROL)
 # ==========================================
 def realizar_peticion_segura(banco, url, local_session):
     MAX_INTENTOS = 3
     error_msg = "Desconocido"
+    dom_origen = urlparse(url).netloc.lower()
     
     for intento in range(MAX_INTENTOS):
         try:
             res = local_session.get(url, timeout=(5, 12))
-            if res.status_code == 200: 
+            if res.status_code == 200:
+                html_cuerpo = res.text
+                dom_actual = urlparse(res.url).netloc.lower()
+                
+                if dom_actual != dom_origen and not dom_actual.endswith(dom_origen.replace("www.", "")):
+                    if len(res.history) > 0:
+                        return None, f"Bloqueo: Redirección fuera de dominio ({dom_actual})"
+                
+                if RE_MUROS_BLOQUEO.search(html_cuerpo) or "ray id:" in html_cuerpo.lower():
+                    return None, "Bloqueo: Muro de Seguridad Detectado"
+                    
                 return res, "OK"
             
             error_msg = f"HTTP Error {res.status_code}"
             if res.status_code not in [429, 500, 502, 503, 504]:
                 return None, error_msg
-                
         except requests.RequestException as e:
             error_msg = type(e).__name__
             
         if intento < MAX_INTENTOS - 1:
-            tiempo_espera = (2 ** intento) + random.uniform(0, 0.5)
-            logging.warning(f"⚠️ Servidor de {banco} ocupado ({error_msg}). Reintentando conexión en {tiempo_espera:.2f}s...")
-            time.sleep(tiempo_espera)
+            time.sleep((2 ** intento) + random.uniform(0, 0.5))
             
     return None, error_msg
 
@@ -116,15 +124,11 @@ def es_tarjeta_fallback(tag):
 
 def procesar_banco_paralelo(banco, url, cache_coords, df_hist):
     promos_locales = []
-    log_local = {"Estado": "No iniciado", "Bloques": 0, "Promos": 0, "Metodo": "Ninguno"}
+    log_local = {"Estado": "No iniciado", "Bloques": 0, "Promos": 0, "Metodo": "Ninguno", "Resultado_Estructura": "UNKNOWN"}
+    fecha_actual_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     with requests.Session() as local_session:
-        estrategia_retry = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            raise_on_status=False
-        )
+        estrategia_retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504], raise_on_status=False)
         adaptador = HTTPAdapter(max_retries=estrategia_retry, pool_connections=1, pool_maxsize=1)
         local_session.mount("https://", adaptador)
         local_session.headers.update({"User-Agent": CONFIG_GLOBAL["STABLE_USER_AGENT"]})
@@ -164,11 +168,7 @@ def procesar_banco_paralelo(banco, url, cache_coords, df_hist):
                     
                     link_tag = tarjeta.find("a", href=True)
                     href_bruto = link_tag["href"].strip() if link_tag else ""
-                    
-                    if not href_bruto or href_bruto.startswith(("#", "javascript:", "tel:", "mailto:")):
-                        url_promo = url
-                    else:
-                        url_promo = urljoin(url, href_bruto)
+                    url_promo = urljoin(url, href_bruto) if href_bruto else url
                     
                     for max_m in cache_coords.keys():
                         if max_m.lower() in texto.lower():
@@ -182,36 +182,78 @@ def procesar_banco_paralelo(banco, url, cache_coords, df_hist):
                         promos_locales.append({
                             "Cadena": nombre, "Tarjeta": banco, "Tipo": tipo_p,
                             "Rango": "Platinum/Oro", "Descuento": f"🔥 {texto[:120]}...",
-                            "URL_Promo": url_promo
+                            "URL_Promo": url_promo,
+                            "Actualizado": fecha_actual_str # Inyección de fecha individual por promoción
                         })
                         promos_conteo += 1
                         
             log_local["Promos"] = promos_conteo
-            if promos_conteo == 0:
+            if promos_conteo > 0:
+                log_local["Resultado_Estructura"] = "INTEGRA_OK"
+            else:
                 html_vivos = res.text.lower()
                 if any(ind in html_vivos for ind in ["__next_data__", "window.__nuxt__", 'id="__nuxt"', "data-server-rendered"]):
                     log_local["Estado"] = "⚠️ REQUIERE JS Framework"
+                    log_local["Resultado_Estructura"] = "FALLO_ESTRUCTURAL_JS"
                 else:
-                    log_local["Estado"] = "⚠️ POSIBLE REDISEÑO HTML"
+                    log_local["Estado"] = "⚠️ HTML CAMBIADO (0 Promos)"
+                    log_local["Resultado_Estructura"] = "FALLO_ESTRUCTURAL_REDISEÑO"
         else:
-            log_local["Estado"] = f"❌ Falla: {diagnostic_msg}"
-            log_local["Metodo"] = "Histórico"
+            log_local["Estado"] = f"❌ {diagnostic_msg}"
+            log_local["Resultado_Estructura"] = "BLOQUEO_SEGURIDAD" if "Bloqueo" in diagnostic_msg else "FALLO_RED"
             
     return promos_locales, log_local
 
 # ==========================================
-# 4. MÓDULOS DE INTEGRACIÓN Y FILTRADO CARTOGRÁFICO
+# 4. MÓDULO 3: FUSIÓN DE HISTORIAL CON TTL INDIVIDUAL POR FILA
 # ==========================================
 def normalizar_y_fusionar_historico(df_nuevo, df_hist):
-    if df_nuevo.empty and not df_hist.empty: return df_hist.copy()
-    if not df_hist.empty:
-        bancos_activos = df_nuevo["Tarjeta"].unique() if not df_nuevo.empty else []
-        df_historico_respaldo = df_hist[~df_hist["Tarjeta"].isin(bancos_activos)]
-        df_unificado = pd.concat([df_nuevo, df_historico_respaldo], ignore_index=True)
+    if df_nuevo.empty and not df_hist.empty:
+        df_hist_filtrado = df_hist.copy()
     else:
-        df_unificado = df_nuevo
-    return df_unificado.drop_duplicates(subset=["Cadena", "Tarjeta", "Tipo", "Descuento"])
+        df_hist_filtrado = df_nuevo.copy()
+    
+    if df_hist.empty:
+        return df_hist_filtrado
 
+    # CORRECCIÓN: Validación del TTL de 7 días calculado celda por celda (Punto 2 de ChatGPT)
+    ahora = datetime.now()
+    limite_caducidad = ahora - timedelta(days=CONFIG_GLOBAL["HISTORIAL_TTL_DIAS"])
+    
+    for banco in CONFIG_GLOBAL["URLS_BANCOS"].keys():
+        status_estructural = dashboard_log.get(banco, {}).get("Resultado_Estructura", "UNKNOWN")
+        
+        if status_estructural in ["FALLO_RED", "FALLO_ESTRUCTURAL_REDISEÑO", "FALLO_ESTRUCTURAL_JS", "BLOQUEO_SEGURIDAD"]:
+            df_hist_banco = df_hist[df_hist["Tarjeta"] == banco].copy()
+            
+            if not df_hist_banco.empty:
+                # Filtrado inteligente celda por celda: elimina filas antiguas de forma individual, no todo el bloque
+                if "Actualizado" in df_hist_banco.columns:
+                    df_hist_banco["Actualizado_DT"] = pd.to_datetime(df_hist_banco["Actualizado"], errors="coerce")
+                    # Conservamos únicamente las filas individuales que no han vencido
+                    df_hist_banco = df_hist_banco[df_hist_banco["Actualizado_DT"] >= limite_caducidad].copy()
+                    df_hist_banco = df_hist_banco.drop(columns=["Actualizado_DT"])
+                
+                if df_hist_banco.empty:
+                    logging.warning(f"🕒 [TTL Expirado Fila] El historial de {banco} caducó individualmente por completo.")
+                    continue
+                
+                prefijo = "🕒 [Histórico Red] " if status_estructural == "FALLO_RED" else "🕒 [Histórico Bloqueo] " if status_estructural == "BLOQUEO_SEGURIDAD" else "🕒 [Histórico Rediseño] "
+                df_hist_banco["Descuento"] = df_hist_banco["Descuento"].apply(
+                    lambda x: f"{prefijo}{x}" if not str(x).startswith("🕒") else x
+                )
+                
+                if df_nuevo.empty:
+                    df_hist_filtrado = pd.concat([df_hist_filtrado, df_hist_banco], ignore_index=True)
+                else:
+                    if not (df_nuevo["Tarjeta"] == banco).any():
+                        df_hist_filtrado = pd.concat([df_hist_filtrado, df_hist_banco], ignore_index=True)
+                
+    return df_hist_filtrado.drop_duplicates(subset=["Cadena", "Tarjeta", "Tipo", "Descuento"])
+
+# ==========================================
+# 5. MÓDULOS CARTOGRÁFICOS Y VALIDACIÓN PRE-SAVE
+# ==========================================
 def procesar_geolocalizacion_limpia(df_matriz, cache_coords):
     registros_finales = []
     marcas_pendientes = set()
@@ -219,20 +261,31 @@ def procesar_geolocalizacion_limpia(df_matriz, cache_coords):
     for _, row in df_matriz.iterrows():
         marca = row["Cadena"]
         lat, lon = cache_coords.get(marca, [None, None])
-        
         if lat is None or lon is None:
             if marca != "Oferta Desconocida": marcas_pendientes.add(marca)
             continue
-            
         r = row.copy()
         r["lat"], r["lon"] = lat, lon
         registros_finales.append(r)
         
     return pd.DataFrame(registros_finales), list(marcas_pendientes)
 
-# ==========================================
-# 5. MÓDULO DE TRANSMISIÓN DE TENDENCIAS Y LOGS
-# ==========================================
+def validar_dataframe_final(df):
+    if df.empty:
+        logging.warning("⚠️ Alerta de Calidad: El DataFrame final quedó legítimamente vacío por caducidad estricta.")
+        return True
+        
+    columnas_requeridas = ["Cadena", "Tarjeta", "Tipo", "Rango", "Descuento", "URL_Promo", "lat", "lon", "Actualizado"]
+    if not all(col in df.columns for col in columnas_requeridas):
+        logging.error("❌ Falla de Calidad: Estructura de columnas alterada. Guardado cancelado.")
+        return False
+        
+    if df["lat"].isnull().any() or df["lon"].isnull().any():
+        logging.error("❌ Falla de Calidad: Se detectaron registros geográficos corruptos (Null).")
+        return False
+        
+    return True
+
 def registrar_analiticas_y_pendientes(pendientes_lista):
     repo = CONFIG_GLOBAL["REPO_SPACE"]
     stats_historicas = []
@@ -247,10 +300,10 @@ def registrar_analiticas_y_pendientes(pendientes_lista):
         
     registro_hoy = {
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Interbank": dashboard_log["Interbank"],
-        "BCP": dashboard_log["BCP"],
-        "CMR": dashboard_log["CMR"],
-        "Efectibank": dashboard_log["Efectibank"]
+        "Interbank": dashboard_log.get("Interbank", {}),
+        "BCP": dashboard_log.get("BCP", {}),
+        "CMR": dashboard_log.get("CMR", {}),
+        "Efectiva": dashboard_log.get("Efectiva", {})
     }
     stats_historicas.append(registro_hoy)
     with open("estadisticas.json", "w") as f: json.dump(stats_historicas[-30:], f, indent=4)
@@ -258,11 +311,10 @@ def registrar_analiticas_y_pendientes(pendientes_lista):
     try:
         ruta_pendientes = hf_hub_download(repo_id=repo, filename="pendientes.json", repo_type="space", token=token_hf)
         with open(ruta_pendientes, "r") as f: dict_pendientes_viejo = json.load(f)
-        if "marcas" not in dict_pendientes_viejo: dict_pendientes_viejo = {"marcas": {}}
     except Exception:
         pass
         
-    marcas_dict = dict_pendientes_viejo["marcas"]
+    marcas_dict = dict_pendientes_viejo.get("marcas", {})
     for marca in pendientes_lista:
         if marca not in marcas_dict:
             marcas_dict[marca] = {"primera_vez": fecha_hoy_corta, "ultima_vez": fecha_hoy_corta}
@@ -273,11 +325,11 @@ def registrar_analiticas_y_pendientes(pendientes_lista):
     with open("pendientes.json", "w") as f: json.dump({"marcas": marcas_ordenadas}, f, indent=4)
 
 # ==========================================
-# 6. ORQUESTADOR CENTRAL ASÍNCRONO RESILIENTE
+# 6. ORQUESTADOR CENTRAL ASÍNCRONO BLINDADO
 # ==========================================
 if __name__ == "__main__":
     tiempo_inicio = time.perf_counter()
-    logging.info("🚀 Encendiendo Orquestador Concurrente Metropolitano v8.0-InterbankRoot...")
+    logging.info("🚀 Encendiendo Orquestador Concurrente Metropolitano v8.5.1 [Cierre Técnico Base]...")
     
     memoria_mapas, df_historico_previo = cargar_memorias_historicas()
     promos_acumuladas = []
@@ -294,43 +346,42 @@ if __name__ == "__main__":
                 promos_acumuladas.extend(lista_p)
                 dashboard_log[banco_nombre] = log_p
             except Exception as e_hilo:
-                logging.error(f"❌ Falla de execution en el hilo de {banco_nombre}: {e_hilo}")
-                dashboard_log[banco_nombre] = {"Estado": f"Err: {type(e_hilo).__name__}", "Bloques": 0, "Promos": 0, "Metodo": "Ninguno"}
+                logging.error(f"❌ Falla de ejecución en el hilo de {banco_nombre}: {e_hilo}")
+                dashboard_log[banco_nombre] = {"Estado": "Fallo Hilo", "Bloques": 0, "Promos": 0, "Metodo": "Ninguno", "Resultado_Estructura": "FALLO_RED"}
 
     df_raspado_vivo = pd.DataFrame(promos_acumuladas)
     df_consolidado = normalizar_y_fusionar_historico(df_raspado_vivo, df_historico_previo)
     df_produccion, lista_pendientes = procesar_geolocalizacion_limpia(df_consolidado, memoria_mapas)
     
-    registrar_analiticas_y_pendientes(lista_pendientes)
+    if validar_dataframe_final(df_produccion):
+        registrar_analiticas_y_pendientes(lista_pendientes)
+        
+        if not df_produccion.empty:
+            df_produccion.to_csv("promos.csv", index=False)
+        else:
+            pd.DataFrame(columns=["Cadena", "Tarjeta", "Tipo", "Rango", "Descuento", "URL_Promo", "lat", "lon", "Actualizado"]).to_csv("promos.csv", index=False)
+            
+        if token_hf:
+            repo_target = CONFIG_GLOBAL["REPO_SPACE"]
+            for archivo_local in ["promos.csv", "estadisticas.json", "pendientes.json"]:
+                if os.path.exists(archivo_local):
+                    try:
+                        api_hf.upload_file(path_or_fileobj=archivo_local, path_in_repo=archivo_local, repo_id=repo_target, repo_type="space", token=token_hf)
+                        logging.info(f"   📊 Sincronizado correctamente en tu Space: {archivo_local}")
+                    except Exception as error_subida:
+                        logging.error(f"   ❌ Fallo al subir {archivo_local}: {error_subida}")
+    else:
+        logging.error("❌ Transmisión abortada temporalmente por fallo de integridad de columnas.")
+        
     duracion_total = time.perf_counter() - tiempo_inicio
     
-    # Despliegue del Dashboard de Operaciones en Consola
+    # Despliegue del Tablero de Control Uniforme
     logging.info("📋 ==============================================")
-    logging.info("📊 TABLERO DE CONTROL OPERATIVO RADAR FINAL")
+    logging.info("📊 TABLERO DE CONTROL OPERATIVO RADAR v8.5.1")
     logging.info("==================================================")
     for bk, d in dashboard_log.items():
-        logging.info(f"🔹 {bk.ljust(12)}: {d['Estado'].ljust(26)} · Vía: {d['Metodo'].ljust(12)} · {str(d['Bloques']).ljust(3)} bloques · {d['Promos']} promos.")
+        logging.info(f"🔹 {bk.ljust(12)}: {d['Estado'].ljust(26)} · Vía: {d['Metodo'].ljust(16)} · Conteo: {d['Promos']} promos.")
     logging.info("==================================================")
     logging.info(f"⏱️ Tiempo total de procesamiento asíncrono: {duracion_total:.2f} s")
-    logging.info(f"📦 Comercios acumulados sin coordenadas en JSON: {len(lista_pendientes)}")
     logging.info("==================================================")
-    
-    df_produccion["Actualizado"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    df_produccion.to_csv("promos.csv", index=False)
-    
-    # Transmisión secuencial segura a Hugging Face
-    if token_hf:
-        repo_target = CONFIG_GLOBAL["REPO_SPACE"]
-        archivos_salida = ["promos.csv", "estadisticas.json", "pendientes.json"]
-        
-        logging.info("📤 Iniciando transmisión secuencial segura a Hugging Face...")
-        for archivo_local in archivos_salida:
-            if os.path.exists(archivo_local):
-                try:
-                    api_hf.upload_file(path_or_fileobj=archivo_local, path_in_repo=archivo_local, repo_id=repo_target, repo_type="space", token=token_hf)
-                    logging.info(f"   ✅ Archivo sincronizado correctamente: {archivo_local}")
-                except Exception as error_subida:
-                    logging.error(f"   ❌ Transmisión interrumpida en: {archivo_local}. Causa: {error_subida}")
-                    
-        logging.info("🏆 [CONGELADO] El radar definitivo está operando de forma autónoma.")
         
