@@ -9,6 +9,8 @@ import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 from huggingface_hub import HfApi, hf_hub_download
 from bs4 import BeautifulSoup
 
@@ -16,29 +18,30 @@ from bs4 import BeautifulSoup
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ==========================================
-# 1. CONSTANTES COMPILADAS Y CONFIGURACIÓN (Puntos 2 y 3)
+# 1. CONFIGURACIÓN CENTRALIZADA DE PRODUCCIÓN
 # ==========================================
 CONFIG_GLOBAL = {
     "REPO_SPACE": "YoeLui/radar-vmt",
     "URLS_BANCOS": {
-        "Interbank": "https://interbank.pe/promociones-catalogo/todo/tarjeta-de-credito",
+        "Interbank": "https://interbank.pe/promociones", # <--- URL cambiada según la sugerencia de ChatGPT
         "BCP": "https://www.beneficiosbcp.com/",
-        "CMR": "https://www.bancofalabella.pe/promociones"
+        "CMR": "https://www.bancofalabella.pe/promociones",
+        "Efectibank": "https://www.efectiva.com.pe/promociones-y-campanas/" # URL real y segura de Financiera Efectiva
     },
     "SELECTORES": {
         "Interbank": [".promo-card", ".promotion-card", "div[class*='promo']", "div[class*='oferta']"],
         "BCP": [".benefit-card", ".offer-card", "div[class*='beneficio']", "article"],
-        "CMR": [".promotion-item", ".card-promo", "div[class*='oferta']", "section"]
+        "CMR": [".promotion-item", ".card-promo", "div[class*='oferta']", "section"],
+        "Efectibank": ["div[class*='promo']", "div[class*='campana']", "section", "article"]
     },
     "PALABRAS_BASURA": [
         "extracash", "fondos mutuos", "solicita tu", "estado de cuenta", 
         "cuenta sueldo", "préstamo", "inversión", "tarjetas adicionales", "línea de crédito"
     ],
-    # Un único User-Agent móvil premium y estable para evitar sospechas por rotación (Punto 1 del debate)
     "STABLE_USER_AGENT": "Mozilla/5.0 (Linux; Android 10; K; WebView) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
 }
 
-# OPTIMIZACIÓN CORE: Expresiones regulares pre-compiladas en memoria (Punto 2)
+# Expresiones regulares pre-compiladas para optimizar velocidad por hilos
 RE_GANCHO_AHORRO = re.compile(r"(\d+%\s*de\s*descuento|2x1|ahorro|exclusivo|S/\s*\d+|cashback|beneficio)", re.I)
 RE_FALSOS_TITULOS = re.compile(r"(buscar|carrito|legales|términos)", re.I)
 
@@ -58,8 +61,7 @@ def cargar_memorias_historicas():
         ruta_json = hf_hub_download(repo_id=repo, filename="cache_coordenadas.json", repo_type="space", token=token_hf)
         with open(ruta_json, "r") as f: cache_coords = json.load(f)
     except Exception as error_hf:
-        # Registra el error transparente sin ocultarlo para auditorías de red o token (Punto 1 de ChatGPT)
-        logging.warning(f"ℹ️ Cargando caché cartográfico base por contingencia o ausencia de archivo: {error_hf}")
+        logging.warning(f"ℹ️ Cargando caché de contingencia por ausencia o verificación de archivo: {error_hf}")
         cache_coords = {
             "Tottus": [-12.16542, -76.93351], "Sodimac": [-12.15900, -76.93500],
             "Falabella": [-12.15550, -76.93850], "Tambo": [-12.16220, -76.93600],
@@ -79,7 +81,7 @@ def cargar_memorias_historicas():
     return cache_coords, df_hist
 
 # ==========================================
-# 3. MÓDULO 2: HILOS TRABAJADORES THREAD-SAFE
+# 3. MÓDULO 2: HILOS TRABAJADORES THREAD-SAFE (POOL DE RETRY NATIVO)
 # ==========================================
 def realizar_peticion_segura(banco, url, local_session):
     MAX_INTENTOS = 3
@@ -99,7 +101,6 @@ def realizar_peticion_segura(banco, url, local_session):
             error_msg = type(e).__name__
             
         if intento < MAX_INTENTOS - 1:
-            # Backoff exponencial con jitter para evitar concurrencias síncronas exactas en red
             tiempo_espera = (2 ** intento) + random.uniform(0, 0.5)
             logging.warning(f"⚠️ Servidor de {banco} ocupado ({error_msg}). Reintentando conexión en {tiempo_espera:.2f}s...")
             time.sleep(tiempo_espera)
@@ -118,7 +119,14 @@ def procesar_banco_paralelo(banco, url, cache_coords, df_hist):
     log_local = {"Estado": "No iniciado", "Bloques": 0, "Promos": 0, "Metodo": "Ninguno"}
     
     with requests.Session() as local_session:
-        # Mantenemos el User-Agent fijo y altamente confiable por ejecución
+        estrategia_retry = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            raise_on_status=False
+        )
+        adaptador = HTTPAdapter(max_retries=estrategia_retry, pool_connections=1, pool_maxsize=1)
+        local_session.mount("https://", adaptador)
         local_session.headers.update({"User-Agent": CONFIG_GLOBAL["STABLE_USER_AGENT"]})
         
         res, diagnostic_msg = realizar_peticion_segura(banco, url, local_session)
@@ -150,7 +158,6 @@ def procesar_banco_paralelo(banco, url, cache_coords, df_hist):
                 
                 if any(basura in texto.lower() for basura in CONFIG_GLOBAL["PALABRAS_BASURA"]): continue
                 
-                # Consumo de la expresión regular pre-compilada rápida
                 if RE_GANCHO_AHORRO.search(texto):
                     tag_tit = tarjeta.find(["h2", "h3", "h4", "strong", "b"])
                     nombre = tag_tit.get_text(strip=True).title() if tag_tit else "Oferta Desconocida"
@@ -224,7 +231,7 @@ def procesar_geolocalizacion_limpia(df_matriz, cache_coords):
     return pd.DataFrame(registros_finales), list(marcas_pendientes)
 
 # ==========================================
-# 5. MÓDULO DE TRANSMISIÓN DE TENDENCIAS Y HISTORIAL JSON
+# 5. MÓDULO DE TRANSMISIÓN DE TENDENCIAS Y LOGS
 # ==========================================
 def registrar_analiticas_y_pendientes(pendientes_lista):
     repo = CONFIG_GLOBAL["REPO_SPACE"]
@@ -242,7 +249,8 @@ def registrar_analiticas_y_pendientes(pendientes_lista):
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "Interbank": dashboard_log["Interbank"],
         "BCP": dashboard_log["BCP"],
-        "CMR": dashboard_log["CMR"]
+        "CMR": dashboard_log["CMR"],
+        "Efectibank": dashboard_log["Efectibank"]
     }
     stats_historicas.append(registro_hoy)
     with open("estadisticas.json", "w") as f: json.dump(stats_historicas[-30:], f, indent=4)
@@ -265,16 +273,16 @@ def registrar_analiticas_y_pendientes(pendientes_lista):
     with open("pendientes.json", "w") as f: json.dump({"marcas": marcas_ordenadas}, f, indent=4)
 
 # ==========================================
-# 6. ORQUESTADOR CENTRAL ASÍNCRONO COMPLETADO
+# 6. ORQUESTADOR CENTRAL ASÍNCRONO RESILIENTE
 # ==========================================
 if __name__ == "__main__":
     tiempo_inicio = time.perf_counter()
-    logging.info("🚀 Encendiendo Orquestador Concurrente Metropolitano v7.9 [Estable Final]...")
+    logging.info("🚀 Encendiendo Orquestador Concurrente Metropolitano v8.0-InterbankRoot...")
     
     memoria_mapas, df_historico_previo = cargar_memorias_historicas()
     promos_acumuladas = []
     
-    with ThreadPoolExecutor(max_workers=3) as ejecutor:
+    with ThreadPoolExecutor(max_workers=4) as ejecutor:
         tareas = {
             ejecutor.submit(procesar_banco_paralelo, b, u, memoria_mapas, df_historico_previo): b 
             for b, u in CONFIG_GLOBAL["URLS_BANCOS"].items()
@@ -286,7 +294,7 @@ if __name__ == "__main__":
                 promos_acumuladas.extend(lista_p)
                 dashboard_log[banco_nombre] = log_p
             except Exception as e_hilo:
-                logging.error(f"❌ Falla crítica de ejecución en el hilo de {banco_nombre}: {e_hilo}")
+                logging.error(f"❌ Falla de execution en el hilo de {banco_nombre}: {e_hilo}")
                 dashboard_log[banco_nombre] = {"Estado": f"Err: {type(e_hilo).__name__}", "Bloques": 0, "Promos": 0, "Metodo": "Ninguno"}
 
     df_raspado_vivo = pd.DataFrame(promos_acumuladas)
@@ -296,12 +304,12 @@ if __name__ == "__main__":
     registrar_analiticas_y_pendientes(lista_pendientes)
     duracion_total = time.perf_counter() - tiempo_inicio
     
-    # Despliegue homogéneo del Dashboard de Operaciones mediante logs estandarizados
+    # Despliegue del Dashboard de Operaciones en Consola
     logging.info("📋 ==============================================")
-    logging.info("📊 TABLERO DE CONTROL OPERATIVO RADAR v7.9 DEFINITIVO")
+    logging.info("📊 TABLERO DE CONTROL OPERATIVO RADAR FINAL")
     logging.info("==================================================")
     for bk, d in dashboard_log.items():
-        logging.info(f"🔹 {bk.ljust(10)}: {d['Estado'].ljust(26)} · Vía: {d['Metodo'].ljust(12)} · {str(d['Bloques']).ljust(3)} bloques · {d['Promos']} promos.")
+        logging.info(f"🔹 {bk.ljust(12)}: {d['Estado'].ljust(26)} · Vía: {d['Metodo'].ljust(12)} · {str(d['Bloques']).ljust(3)} bloques · {d['Promos']} promos.")
     logging.info("==================================================")
     logging.info(f"⏱️ Tiempo total de procesamiento asíncrono: {duracion_total:.2f} s")
     logging.info(f"📦 Comercios acumulados sin coordenadas en JSON: {len(lista_pendientes)}")
@@ -310,7 +318,7 @@ if __name__ == "__main__":
     df_produccion["Actualizado"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     df_produccion.to_csv("promos.csv", index=False)
     
-    # Transmisión secuencial a Hugging Face libre de conflictos Git
+    # Transmisión secuencial segura a Hugging Face
     if token_hf:
         repo_target = CONFIG_GLOBAL["REPO_SPACE"]
         archivos_salida = ["promos.csv", "estadisticas.json", "pendientes.json"]
@@ -324,4 +332,5 @@ if __name__ == "__main__":
                 except Exception as error_subida:
                     logging.error(f"   ❌ Transmisión interrumpida en: {archivo_local}. Causa: {error_subida}")
                     
-        logging.info("🏆 [CÓDIGO CONGELADO] El radar v7.9 está oficialmente en producción estable.")
+        logging.info("🏆 [CONGELADO] El radar definitivo está operando de forma autónoma.")
+        
