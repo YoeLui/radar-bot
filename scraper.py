@@ -24,11 +24,11 @@ CONFIG_GLOBAL = {
     "REPO_SPACE": "YoeLui/radar-vmt",
     "HISTORIAL_TTL_DIAS": 7, 
     "URLS_BANCOS": {
-        "Interbank": "https://interbank.pe/promociones-catalogo/todo/tarjeta-de-credito",
-        "BCP": "https://www.beneficiosbcp.com/",
-        "CMR": "https://www.bancofalabella.pe/promociones",
-        "Efectiva": "https://www.efectiva.com.pe/promociones-y-campanas/"
-    },
+    "Interbank": "https://interbank.pe/promociones",
+    "BCP": "https://www.viabcp.com/beneficios",
+    "CMR": "https://www.bancofalabella.pe/beneficios",
+    "Efectiva": "https://www.efectiva.com.pe/promociones"
+},
     "SELECTORES": {
         "Interbank": [".promo-card", ".promotion-card", "div[class*='promo']"],
         "BCP": [".benefit-card", ".offer-card", "article"],
