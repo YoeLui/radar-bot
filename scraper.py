@@ -265,17 +265,16 @@ def procesar_geolocalizacion_limpia(df_matriz, cache_coords):
         marca = row["Cadena"]
         puntos = cache_coords.get(marca, [])
         
-        # ACTIALIZACIÓN v8.6: Motor Híbrido de Múltiples Sucursales Metropolitanas
-        if puntos and isinstance(puntos[0], list):
-            # Recorre todas las sucursales y clona la oferta en cada punto geográfico
-            for punto in puntos:
-                r = row.copy()
-                r["lat"], r["lon"] = punto[0], punto[1]
-                registros_finales.append(r)
-        elif puntos and len(puntos) == 2 and not isinstance(puntos[0], list):
-            # Compatibilidad con formato antiguo de un solo punto
+        if puntos:
+            # ARQUITECTURA LIMPIA: Guardamos solo 1 fila en el CSV (la sucursal principal)
+            # El frontend (app.py) se encargará de expandir los pines en el mapa.
+            if isinstance(puntos[0], list):
+                lat, lon = puntos[0][0], puntos[0][1] 
+            else:
+                lat, lon = puntos[0], puntos[1]
+                
             r = row.copy()
-            r["lat"], r["lon"] = puntos[0], puntos[1]
+            r["lat"], r["lon"] = lat, lon
             registros_finales.append(r)
         else:
             if marca != "Oferta Desconocida":
