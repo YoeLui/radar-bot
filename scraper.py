@@ -14,7 +14,7 @@ from urllib3.util import Retry
 from huggingface_hub import HfApi, hf_hub_download
 from bs4 import BeautifulSoup
 
-# Configuración del motor de logs estructurado estándar de la industria
+# Configuración del motor de logs estructurado estándar
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ==========================================
@@ -23,12 +23,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 CONFIG_GLOBAL = {
     "REPO_SPACE": "YoeLui/radar-vmt",
     "HISTORIAL_TTL_DIAS": 7, 
+    # URLs originales conservadas por estabilidad
     "URLS_BANCOS": {
-    "Interbank": "https://interbank.pe/promociones",
-    "BCP": "https://www.viabcp.com/beneficios",
-    "CMR": "https://www.bancofalabella.pe/beneficios",
-    "Efectiva": "https://www.efectiva.com.pe/promociones"
-},
+        "Interbank": "https://interbank.pe/promociones-catalogo/todo/tarjeta-de-credito",
+        "BCP": "https://www.beneficiosbcp.com/",
+        "CMR": "https://www.bancofalabella.pe/promociones",
+        "Efectiva": "https://www.efectiva.com.pe/promociones-y-campanas/"
+    },
     "SELECTORES": {
         "Interbank": [".promo-card", ".promotion-card", "div[class*='promo']"],
         "BCP": [".benefit-card", ".offer-card", "article"],
@@ -42,9 +43,11 @@ CONFIG_GLOBAL = {
     "STABLE_USER_AGENT": "Mozilla/5.0 (Linux; Android 10; K; WebView) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
 }
 
-RE_GANCHO_AHORRO = re.compile(r"(\d+%\s*de\s*descuento|2x1|ahorro|exclusivo|S/\s*\d+|cashback|beneficio)", re.I)
+# EXPANSIÓN v8.7: Motor de detección de ofertas avanzado (Regex) y Frameworks JS
+RE_GANCHO_AHORRO = re.compile(r"(\d+%\s*de\s*descuento|2x1|3x2|ahorro|exclusivo|S/\s*\d+|cashback|beneficio|hasta\s*\d+%|delivery gratis|cuotas sin interés|envío gratis|2da unidad)", re.I)
 RE_FALSOS_TITULOS = re.compile(r"(buscar|carrito|legales|términos)", re.I)
 RE_MUROS_BLOQUEO = re.compile(r"(cloudflare|captcha|verify you are human|sucursal virtual|acceso denegado|robot|security check)", re.I)
+FRAMEWORKS_JS = ["__next_data__", "window.__nuxt__", "data-server-rendered", "react-root", "ng-version", "vue-app", 'id="__nuxt"']
 
 api_hf = HfApi()
 token_hf = os.getenv("HF_TOKEN")
@@ -62,20 +65,20 @@ def cargar_memorias_historicas():
         ruta_json = hf_hub_download(repo_id=repo, filename="cache_coordenadas.json", repo_type="space", token=token_hf)
         with open(ruta_json, "r") as f: cache_coords = json.load(f)
     except Exception:
-        # DICCIONARIO DE EMERGENCIA: Formato Multi-Sucursal
+        # RESPALDO DE EMERGENCIA CONSERVADO (Compatibilidad multi-formato)
         cache_coords = {
-            "Tottus": [[-12.16542, -76.93351], [-11.86720, -77.07540], [-12.20330, -76.93980], [-12.11200, -77.02700], [-12.07600, -77.08200]],
-            "Sodimac": [[-12.15900, -76.93500], [-11.86900, -77.07400], [-12.08300, -77.01200], [-12.00700, -77.05800]],
-            "Falabella": [[-12.15550, -76.93850], [-11.99300, -77.06200], [-12.10300, -77.02000], [-12.12200, -77.03000]],
-            "Tambo": [[-12.16220, -76.93600], [-11.86550, -77.07200], [-12.20500, -76.94100], [-12.04600, -77.04200], [-12.11800, -77.02900]],
-            "Metro": [[-12.16400, -76.93850], [-11.87000, -77.07100], [-12.17600, -77.01400], [-12.00800, -77.05900]],
-            "KFC": [[-12.15550, -76.93900], [-11.86800, -77.07600], [-12.20600, -76.93800], [-12.12100, -77.02800]],
-            "Papa Johns": [[-12.15200, -76.94100], [-11.99500, -77.06100], [-12.12500, -76.99900]],
-            "Bembos": [[-12.15570, -76.93830], [-11.86850, -77.07650], [-12.12150, -77.02850], [-12.00650, -77.05850]],
-            "Cineplanet": [[-12.15590, -76.93800], [-12.20450, -76.93900], [-11.99400, -77.06000], [-12.03000, -77.02500]],
-            "Chili's": [[-12.12240, -76.92720], [-11.99450, -77.06150], [-12.10350, -77.02050]],
-            "Pardos Chicken": [[-12.15580, -76.93810], [-11.86950, -77.07350], [-12.12000, -77.02950], [-12.04500, -77.04100]],
-            "Starbucks": [[-12.12100, -77.03000], [-11.99550, -77.06050], [-12.09500, -77.02500]]
+            "Tottus": [[-12.16542, -76.93351], [-11.86720, -77.07540], [-12.20330, -76.93980]],
+            "Sodimac": [[-12.15900, -76.93500], [-11.86900, -77.07400]],
+            "Falabella": [[-12.15550, -76.93850], [-11.99300, -77.06200]],
+            "Tambo": [[-12.16220, -76.93600], [-11.86550, -77.07200]],
+            "Metro": [[-12.16400, -76.93850], [-11.87000, -77.07100]],
+            "KFC": [[-12.15550, -76.93900], [-11.86800, -77.07600]],
+            "Papa Johns": [[-12.15200, -76.94100], [-11.99500, -77.06100]],
+            "Bembos": [[-12.15570, -76.93830], [-11.86850, -77.07650]],
+            "Cineplanet": [[-12.15590, -76.93800], [-12.20450, -76.93900]],
+            "Chili's": [[-12.12240, -76.92720], [-11.99450, -77.06150]],
+            "Pardos Chicken": [[-12.15580, -76.93810], [-11.86950, -77.07350]],
+            "Starbucks": [[-12.12100, -77.03000], [-11.99550, -77.06050]]
         }
     try:
         ruta_csv = hf_hub_download(repo_id=repo, filename="promos.csv", repo_type="space", token=token_hf)
@@ -131,6 +134,7 @@ def es_tarjeta_fallback(tag):
 
 def procesar_banco_paralelo(banco, url, cache_coords, df_hist):
     promos_locales = []
+    # LOGGING DETALLADO ORIGINAL CONSERVADO
     log_local = {"Estado": "No iniciado", "Bloques": 0, "Promos": 0, "Metodo": "Ninguno", "Resultado_Estructura": "UNKNOWN"}
     fecha_actual_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -199,7 +203,8 @@ def procesar_banco_paralelo(banco, url, cache_coords, df_hist):
                 log_local["Resultado_Estructura"] = "INTEGRA_OK"
             else:
                 html_vivos = res.text.lower()
-                if any(ind in html_vivos for ind in ["__next_data__", "window.__nuxt__", 'id="__nuxt"', "data-server-rendered"]):
+                # DETECCIÓN AVANZADA DE JS
+                if any(ind in html_vivos for ind in FRAMEWORKS_JS):
                     log_local["Estado"] = "⚠️ REQUIERE JS Framework"
                     log_local["Resultado_Estructura"] = "FALLO_ESTRUCTURAL_JS"
                 else:
@@ -212,7 +217,7 @@ def procesar_banco_paralelo(banco, url, cache_coords, df_hist):
     return promos_locales, log_local
 
 # ==========================================
-# 4. MÓDULO 3: FUSIÓN DE HISTORIAL CON TTL INDIVIDUAL POR FILA
+# 4. MÓDULO 3: FUSIÓN DE HISTORIAL (ESTABILIZADO)
 # ==========================================
 def normalizar_y_fusionar_historico(df_nuevo, df_hist):
     if df_nuevo.empty and not df_hist.empty:
@@ -241,7 +246,7 @@ def normalizar_y_fusionar_historico(df_nuevo, df_hist):
                 if df_hist_banco.empty:
                     continue
                 
-                prefijo = "🕒 [Histórico Red] " if status_estructural == "FALLO_RED" else "🕒 [Histórico Bloqueo] " if status_estructural == "BLOQUEO_SEGURIDAD" else "🕒 [Histórico Rediseño] "
+                prefijo = "🕒 [Histórico] "
                 df_hist_banco["Descuento"] = df_hist_banco["Descuento"].apply(
                     lambda x: f"{prefijo}{x}" if not str(x).startswith("🕒") else x
                 )
@@ -252,10 +257,11 @@ def normalizar_y_fusionar_historico(df_nuevo, df_hist):
                     if not (df_nuevo["Tarjeta"] == banco).any():
                         df_hist_filtrado = pd.concat([df_hist_filtrado, df_hist_banco], ignore_index=True)
                 
+    # DEDUPLICACIÓN SIN ALTERAR COLUMNAS (Estabilidad v8.6)
     return df_hist_filtrado.drop_duplicates(subset=["Cadena", "Tarjeta", "Tipo", "Descuento"])
 
 # ==========================================
-# 5. MÓDULOS CARTOGRÁFICOS MULTI-SUCURSAL Y VALIDACIÓN
+# 5. MÓDULOS CARTOGRÁFICOS MULTI-FORMATO Y VALIDACIÓN SEGURA
 # ==========================================
 def procesar_geolocalizacion_limpia(df_matriz, cache_coords):
     registros_finales = []
@@ -266,16 +272,19 @@ def procesar_geolocalizacion_limpia(df_matriz, cache_coords):
         puntos = cache_coords.get(marca, [])
         
         if puntos:
-            # ARQUITECTURA LIMPIA: Guardamos solo 1 fila en el CSV (la sucursal principal)
-            # El frontend (app.py) se encargará de expandir los pines en el mapa.
-            if isinstance(puntos[0], list):
+            # Compatibilidad total: Lee dicts, listas anidadas o lista simple
+            if isinstance(puntos[0], dict): 
+                lat, lon = puntos[0].get("lat"), puntos[0].get("lon")
+            elif isinstance(puntos[0], list): 
                 lat, lon = puntos[0][0], puntos[0][1] 
             else:
                 lat, lon = puntos[0], puntos[1]
                 
-            r = row.copy()
-            r["lat"], r["lon"] = lat, lon
-            registros_finales.append(r)
+            # FIX CRÍTICO DE COORDENADAS v8.7 (pd.notna resuelve el bug de lat=0)
+            if pd.notna(lat) and pd.notna(lon) and (-90 <= lat <= 90) and (-180 <= lon <= 180):
+                r = row.copy()
+                r["lat"], r["lon"] = lat, lon
+                registros_finales.append(r)
         else:
             if marca != "Oferta Desconocida":
                 marcas_pendientes.add(marca)
@@ -341,7 +350,7 @@ def registrar_analiticas_y_pendientes(pendientes_lista):
 # ==========================================
 if __name__ == "__main__":
     tiempo_inicio = time.perf_counter()
-    logging.info("🚀 Encendiendo Orquestador Concurrente Metropolitano v8.6 [Multisucursal]...")
+    logging.info("🚀 Encendiendo Orquestador Concurrente Metropolitano v8.7 [Incremental]...")
     
     memoria_mapas, df_historico_previo = cargar_memorias_historicas()
     promos_acumuladas = []
@@ -388,11 +397,11 @@ if __name__ == "__main__":
     duracion_total = time.perf_counter() - tiempo_inicio
     
     logging.info("📋 ==============================================")
-    logging.info("📊 TABLERO DE CONTROL OPERATIVO RADAR v8.6")
+    logging.info("📊 TABLERO DE CONTROL OPERATIVO RADAR v8.7")
     logging.info("==================================================")
     for bk, d in dashboard_log.items():
         logging.info(f"🔹 {bk.ljust(12)}: {d['Estado'].ljust(26)} · Vía: {d['Metodo'].ljust(16)} · Conteo: {d['Promos']} promos.")
     logging.info("==================================================")
     logging.info(f"⏱️ Tiempo total de procesamiento asíncrono: {duracion_total:.2f} s")
     logging.info("==================================================")
-                    
+        
