@@ -374,34 +374,43 @@ if __name__ == "__main__":
     df_consolidado = normalizar_y_fusionar_historico(df_raspado_vivo, df_historico_previo)
     df_produccion, lista_pendientes = procesar_geolocalizacion_limpia(df_consolidado, memoria_mapas)
     
-    if validar_dataframe_final(df_produccion):
+        if validar_dataframe_final(df_produccion):
         registrar_analiticas_y_pendientes(lista_pendientes)
         
         if not df_produccion.empty:
             df_produccion.to_csv("promos.csv", index=False)
-        else:
-            pd.DataFrame(columns=["Cadena", "Tarjeta", "Tipo", "Rango", "Descuento", "URL_Promo", "lat", "lon", "Actualizado"]).to_csv("promos.csv", index=False)
             
-        if token_hf:
-            repo_target = CONFIG_GLOBAL["REPO_SPACE"]
-            for archivo_local in ["promos.csv", "estadisticas.json", "pendientes.json"]:
-                if os.path.exists(archivo_local):
-                    try:
-                        api_hf.upload_file(path_or_fileobj=archivo_local, path_in_repo=archivo_local, repo_id=repo_target, repo_type="space", token=token_hf)
-                        logging.info(f"   📊 Sincronizado correctamente: {archivo_local}")
-                    except Exception as error_subida:
-                        logging.error(f"   ❌ Fallo al subir {archivo_local}: {error_subida}")
-    else:
-        logging.error("❌ Transmisión abortada temporalmente por fallo de integridad de columnas.")
-        
-    duracion_total = time.perf_counter() - tiempo_inicio
-    
-    logging.info("📋 ==============================================")
-    logging.info("📊 TABLERO DE CONTROL OPERATIVO RADAR v8.7")
-    logging.info("==================================================")
-    for bk, d in dashboard_log.items():
-        logging.info(f"🔹 {bk.ljust(12)}: {d['Estado'].ljust(26)} · Vía: {d['Metodo'].ljust(16)} · Conteo: {d['Promos']} promos.")
-    logging.info("==================================================")
-    logging.info(f"⏱️ Tiempo total de procesamiento asíncrono: {duracion_total:.2f} s")
-    logging.info("==================================================")
-        
+            if token_hf:
+                repo_target = CONFIG_GLOBAL["REPO_SPACE"]
+                for archivo_local in ["promos.csv", "estadisticas.json", "pendientes.json"]:
+                    if os.path.exists(archivo_local):
+                        try:
+                            api_hf.upload_file(path_or_fileobj=archivo_local, path_in_repo=archivo_local, repo_id=repo_target, repo_type="space", token=token_hf)
+                            logging.info(f"   📊 Sincronizado: {archivo_local}")
+                        except Exception as error_subida:
+                            logging.error(f"   ❌ Fallo al subir {archivo_local}: {error_subida}")
+        else:
+            # 🛡️ ESCUDO ANTI-AMNESIA ACTIVADO
+            logging.warning("⚠️ ALERTA: 0 promociones detectadas en total. Activando ESCUDO ANTI-AMNESIA.")
+            logging.warning("⚠️ El archivo promos.csv NO será sobrescrito para proteger el mapa en producción.")
+            
+            if token_hf:
+                repo_target = CONFIG_GLOBAL["REPO_SPACE"]
+                # Subimos SOLO los logs para registrar la caída, pero no tocamos la base de datos visual
+                for archivo_local in ["estadisticas.json", "pendientes.json"]:
+                    if os.path.exists(archivo_local):
+                        try:
+                            api_hf.upload_file(path_or_fileobj=archivo_local, path_in_repo=archivo_local, repo_id=repo_target, repo_type="space", token=token_hf)
+                            logging.info(f"   📊 Sincronizado log de fallo: {archivo_local}")
+                        except Exception as error_subida:
+                            pass
+                    # Subimos SOLO los logs para registrar la caída
+                for archivo_local in ["estadisticas.json", "pendientes.json"]:
+                    if os.path.exists(archivo_local):
+                        try:
+                            api_hf.upload_file(path_or_fileobj=archivo_local, path_in_repo=archivo_local, repo_id=repo_target, repo_type="space", token=token_hf)
+                            logging.info(f"   📊 Sincronizado log de fallo: {archivo_local}")
+                        except Exception as error_subida:
+                            # 🚨 Mejora ChatGPT: Nunca silenciar un error
+                            logging.error(f"   ❌ Error crítico subiendo {archivo_local}: {error_subida}")
+                            
