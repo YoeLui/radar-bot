@@ -26,7 +26,7 @@ CONFIG_GLOBAL = {
     # URLs originales conservadas por estabilidad
     "URLS_BANCOS": {
         "Interbank": "https://interbank.pe/promociones-catalogo/todo/tarjeta-de-credito",
-        "BCP": "https://www.beneficiosbcp.com/",
+        "BCP": "https://viabcp.com/beneficios",
         "CMR": "https://www.bancofalabella.pe/promociones",
         "Efectiva": "https://www.efectiva.com.pe/promociones-y-campanas/"
     },
