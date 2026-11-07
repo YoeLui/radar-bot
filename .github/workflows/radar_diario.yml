@@ -1,27 +1,37 @@
-name: Actualizacion Diaria de Promociones
+name: Actualizar Radar Bancos
+
 on:
   schedule:
-    - cron: '0 5 * * *'
+    - cron: '0 8 * * *' # Corre todos los días a las 8:00 UTC (3:00 AM hora de Perú)
   workflow_dispatch:
 
 jobs:
-  build-and-refresh:
+  run-scraper:
     runs-on: ubuntu-latest
     steps:
-      - name: Clonar Repositorio
-        uses: actions/checkout@v3
+      - name: Checkout del Bot
+        uses: actions/checkout@v4
 
-      - name: Configurar Python Oficial
-        uses: actions/setup-python@v4
+      - name: Configurar Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Instalar Dependencias de Datos
-        run: |
-          pip install pandas requests huggingface_hub geopy beautifulsoup4
+      - name: Instalar dependencias
+        run: pip install requests pandas huggingface_hub
 
-      - name: Ejecutar Robot Extractor
+      - name: Ejecutar Scraper
+        run: python scraper.py
+
+      - name: Sube los resultados a Hugging Face Spaces
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: python scraper.py
-        
+        run: |
+          git config --global user.name "Radar Bot"
+          git config --global user.email "bot@radar.local"
+          git clone https://x-access-token:${{ secrets.HF_TOKEN }}@huggingface.co/spaces/Yoelui/radar-vmt hf_space
+          cp promos.csv hf_space/promos.csv
+          cd hf_space
+          git add promos.csv
+          git commit -m "Actualización automática de promociones por Bot" || exit 0
+          git push
